@@ -1,0 +1,133 @@
+#==============================================================================
+# Simulate data to estimate a treatment effect in an RCT
+#==============================================================================
+
+# Clear the working space
+  rm(list = ls())
+    
+  library(fmsb)
+  library(ggpubr)
+  library(scales)
+  library(textshape)
+  library(tidyverse) # data wrangling and aggregations
+  library(sandwich)
+  library(stargazer)
+
+# turn off scientific notation except for big numbers
+options(scipen = 9) 
+# function to calculate corrected SEs for regression 
+cse = function(reg) {
+  rob = sqrt(diag(vcovHC(reg, type = "HC1")))
+  return(rob)
+}
+
+
+## Simulate data
+set.seed(78)
+N = 5000
+
+# create a variable pp that that will be indicator for treatment and control
+# create a variable comply for whether person is "complier" (in treatment group they
+# will comply with treatment, in control group interpreted as spillover from treatment
+# here set 20% of all people to be non-compliers
+
+df <- data.frame( pp=sample(c(0, 1), N,replace=TRUE, prob=c(.5, .5)),
+                  soilfert=sample(c(0, 1), N,replace=TRUE, prob=c(.6, .4)),
+                  yearsexp=sample(5:30, N, replace=TRUE),
+                  educ=sample(10:20, N, replace=TRUE),
+                  age=sample(18:60, N, replace = TRUE),
+                  female=rbinom(N,1,.25))  
+
+table(df$pp==1 & df$soilfert==1)
+table(df$pp==1 & df$soilfert==0)
+table(df$pp==0 & df$soilfert==1)
+table(df$pp==0 & df$soilfert==0)
+
+# add a variable id
+df <- df %>% mutate(id=row_number())
+
+# Define a variable treat_effect that will be the simple treatment effect
+df <- df %>% mutate(treat_effect=
+    ifelse(pp==1 & soilfert==1, 1.5,
+    ifelse(pp==1 & soilfert==0, 1.2,
+    ifelse(pp==0 & soilfert==1, .9,
+    ifelse(pp==0 & soilfert==0, .6, NA)))))
+
+# create outcome
+df <- df %>% mutate(yield=
+    ifelse(pp==1 & soilfert==1, treat_effect+.42*yearsexp -.32*female +.47*educ +.24*age -.12*female*educ + rnorm(n()),
+    ifelse(pp==1 & soilfert==0, treat_effect+.37*yearsexp -.37*female +.52*educ +.19*age -.11*female*educ + rnorm(n()),
+    ifelse(pp==0 & soilfert==1, treat_effect+.33*yearsexp -.41*female +.53*educ +.13*age -.08*female*educ + rnorm(n()),
+    ifelse(pp==0 & soilfert==0, treat_effect+.29*yearsexp -.42*female +.57*educ +.08*age -.10*female*educ + rnorm(n()), NA)))))
+
+## 1
+# run an example regression of outcome and explnatory variables   
+summary(lm(yield~ treat_effect + female + yearsexp + I(female*yearsexp) + age + educ + I(age*educ), data=df))
+
+
+# Create two tables of descriptive statistics, the first limiting the observations 
+# to the pre-treatment observations (use subset) of pp==0 and then second for the 
+# end of the program, pp==1.
+
+##2
+stargazer(subset(df, pp==0), type="text", omit=c("treat_effect", "id", "female", "pp*", "soilfert"), digits=2, title="Pre-treatment")
+##3
+stargazer(subset(df, pp==1), type="text", omit=c("treat_effect", "id", "female", "pp*", "soilfert"), digits=2, title="Post-treatment")
+  
+
+# Create a box plot of the outcome to different treatment groups, 
+# subsetting the dataset only including treat_effect and gender, 
+# with treatment group on the x-axis.
+
+##4
+df %>% ggplot(aes(y=yield, x=factor(treat_effect), color=factor(treat_effect)))+
+  geom_boxplot(outlier.shape = NA)+ theme(legend.position = "none")+ labs(title="Crop yield by treatment group")+
+  labs(x="Treatment group", y="Yield (in acres)")
+
+df_treat_11 = subset(df, treat_effect==1.5)
+df_treat_10 = subset(df, treat_effect==1.2)
+df_treat_01 = subset(df, treat_effect==.9)
+df_treat_00 = subset(df, treat_effect==.6)
+summary(df_treat_00$yield)
+
+##5
+df %>% ggplot(aes(y=yield, x=factor(female), color=factor(female)))+
+  geom_boxplot(outlier.shape = NA)+ theme(legend.position = "none")+ labs(title="Crop yield by gender")+
+  labs(x="Gender", y="Yield (in acres)")
+
+df_male = subset(df, female==0)
+df_female = subset(df, female==1)
+summary(df_male$yield)
+
+
+# Use this dataset to create a plot of how profits change for the different treatment groups over time, 
+# and how remittances change for the different treatment groups over time.
+
+##6
+ggplot(df, aes(x=age, y=yield,group=(factor(pp)),
+  color=(factor(pp)) )) + geom_point()+ ggtitle("Age over crop yield, by treatment group")+
+  labs(x="Age", y="Yield") + labs(color="Treatment group") + geom_smooth(method=lm, se=FALSE, size=1)+ 
+  stat_regline_equation(label.x=50, label.y=c(2.5, 5.0)) + theme(legend.position = c(.2, .9))+ theme_bw() 
+
+##7
+ggplot(df, aes(x=yearsexp, y=yield,group=(factor(pp)),
+  color=(factor(pp)) )) + geom_point() + ggtitle("Years of experience over yield, by treatment group")+
+  labs(x="Years of experience", y="Yield") + labs(color="Treatment group") + geom_smooth(method=lm, se=FALSE, size=1)+ 
+  stat_regline_equation(label.x=20, label.y=c(5.0, 7.5)) + theme(legend.position = c(.2, .8))+ theme_bw()
+
+
+# Run 5 regressions and display the results in a table. 
+##8
+r1<-lm(yield~pp+soilfert+female, data=df)
+r2<-lm(yield~pp+soilfert+female+yearsexp, data=df)
+r3<-lm(yield~pp+soilfert+female+yearsexp+I(female*yearsexp), data=df)
+r4<-lm(yield~pp+soilfert+female+yearsexp+I(female*yearsexp)+educ, data=df)
+r5<-lm(yield~pp+soilfert+female+yearsexp+I(female*yearsexp)+educ+age, data=df)
+
+stargazer(r1,r2,r3,r4,r5,
+          title="Regression Results", type="text", omit=c("factor*", "Constant"),
+          df=FALSE, digits=3)
+
+
+
+
